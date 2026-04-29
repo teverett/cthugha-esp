@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "flames.c"
+        "waves.c"
+        "palettes.c"
+        "translate.c"
+        "display.c"
+        "audio_capture.c"
+        "touch_input.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        driver
+        esp_lcd
+        esp_timer
+        freertos
+)

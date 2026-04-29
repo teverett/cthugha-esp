@@ -1,0 +1,226 @@
+//
+// Cthugha ESP32-P4 Port — Main application
+// Audio-seeded real-time visualization
+//
+// Original: Zaph, Digital Aasvogel Group, Torps Productions 1993-1995
+// Port: ESP32-P4 with 720x720 MIPI-DSI LCD and I2S MEMS microphone
+//
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_random.h"
+#include "cthugha.h"
+#include "display.h"
+#include "audio_capture.h"
+#include "touch_input.h"
+
+static const char *TAG = "cthugha";
+
+// --- Global state ---
+static uint8_t buff_a[BUFF_SIZE];
+static uint8_t buff_b[BUFF_SIZE];
+uint8_t *buff   = buff_a;
+uint8_t *shadow = buff_b;
+
+int table[NUMTABLES][256];
+int curtable = 0;
+int min_time = 200;
+int rand_time = 750;
+int curflame = 0;
+
+static int locked = 0;
+static int quiet_change = 1;
+static int was_quiet = 0;
+static int time_to_change = 0;
+static int allow_fft = 0;
+static int use_fft = 0;
+
+// --- Initialization ---
+
+void init_tables(void)
+{
+    for (int j = 0; j < NUMTABLES; j++) {
+        for (int i = 0; i < 256; i++) {
+            switch (j) {
+                default:
+                case 0: table[j][i] = abs(128 - i) * 2;        break;
+                case 1: table[j][i] = 255 - abs(128 - i) * 2;  break;
+                case 2: table[j][i] = i;                        break;
+                case 3: table[j][i] = 255 - i;                  break;
+                case 4: table[j][i] = abs(128 - i) + 127;       break;
+                case 5: table[j][i] = 255 - abs(128 - i) + 127; break;
+                case 6: table[j][i] = abs(i - 128) + 127;       break;
+                case 7:
+                    table[j][i] = (abs(128 - i) < 64) ? 255 : (abs(128 - i) * 4);
+                    break;
+                case 8: table[j][i] = abs(128 - i);             break;
+                case 9: table[j][i] = 255 - abs(128 - i);       break;
+            }
+            table[j][i] = ct_clamp(table[j][i], 0, 255);
+        }
+    }
+}
+
+static void randomize_all(void)
+{
+    curtable = esp_random() % NUMTABLES;
+    fill_lut_buffer(esp_random() % numluts);
+    curflame = change_flame(esp_random());
+    change_wave(esp_random() % numwaves);
+    curdisplay = change_display(esp_random() % numdisplays);
+    if (nrtrans && !(esp_random() % 5))
+        translate_idx = esp_random() % nrtrans;
+}
+
+// --- Touch gesture handling ---
+
+static void handle_touch(touch_gesture_t gesture)
+{
+    switch (gesture) {
+        case TOUCH_TAP:
+            // Cycle wave mode
+            next_wave();
+            break;
+
+        case TOUCH_SWIPE_RIGHT:
+            // Next flame
+            curflame = change_flame(curflame + 1);
+            break;
+
+        case TOUCH_SWIPE_LEFT:
+            // Next palette
+            fill_lut_buffer((curpal + 1) % numluts);
+            break;
+
+        case TOUCH_SWIPE_UP:
+            // Next display mode
+            curdisplay = change_display((curdisplay + 1) % numdisplays);
+            break;
+
+        case TOUCH_SWIPE_DOWN:
+            // Next translation
+            if (nrtrans > 0)
+                translate_idx = (translate_idx + 1) % (nrtrans + 1);
+            break;
+
+        case TOUCH_LONG_PRESS:
+            // Toggle lock
+            locked = !locked;
+            if (!locked)
+                randomize_all();
+            break;
+
+        case TOUCH_DOUBLE_TAP:
+            // Randomize everything
+            randomize_all();
+            break;
+
+        default:
+            break;
+    }
+}
+
+// --- Main render loop ---
+
+static void render_task(void *arg)
+{
+    ESP_LOGI(TAG, "Render task started on core %d", xPortGetCoreID());
+
+    int count = 0;
+    int quiet = 0;
+    int frame = 0;
+
+    while (1) {
+        // Auto-change timer
+        if (count <= 0 && !locked) {
+            randomize_all();
+            count = (esp_random() % rand_time) + min_time;
+        }
+        count--;
+
+        // Apply translation if active
+        if (translate_idx > 0)
+            translate_screen();
+
+        // Flame effect — scrolls/blurs the buffer
+        flame();
+
+        // Clear the bottom rows (wave seeding area)
+        memset(buff + BUFF_BOTTOM * BUFF_WIDTH, 0, (BUFF_HEIGHT - BUFF_BOTTOM) * BUFF_WIDTH);
+
+        // Audio capture and wave rendering
+        if (get_stereo_data()) {
+            wave();
+            if (quiet_change && quiet > quiet_change) {
+                was_quiet = 1;
+                quiet = 0;
+            } else if (was_quiet) {
+                was_quiet = 0;
+                count = 0; // trigger change
+            }
+            quiet = 0;
+        } else {
+            quiet++;
+        }
+
+        // Apply display effect (mirroring/rotation)
+        display_effect();
+
+        // Scale and send to LCD
+        display_render();
+
+        frame++;
+
+        // Touch input polling
+        touch_gesture_t gesture = touch_input_poll();
+        if (gesture != TOUCH_NONE)
+            handle_touch(gesture);
+
+        // Yield to other tasks
+        vTaskDelay(1);
+    }
+}
+
+// --- Entry point ---
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "Cthugha ESP32-P4 — An Oscilloscope on Acid");
+    ESP_LOGI(TAG, "Original by Zaph / Digital Aasvogel Group / Torps Productions 1993-1995");
+
+    // Seed RNG
+    srand(esp_random());
+
+    // Initialize core systems
+    memset(buff_a, 0, BUFF_SIZE);
+    memset(buff_b, 0, BUFF_SIZE);
+
+    init_divsub();
+    init_tables();
+    init_sine();
+    init_palettes();
+    init_translate();
+
+    // Set initial random modes
+    curflame = change_flame(esp_random());
+    change_wave(esp_random() % 24);
+    curdisplay = change_display(esp_random() % 8);
+    fill_lut_buffer(esp_random() % numluts);
+
+    // Initialize hardware
+    display_init();
+    audio_capture_init();
+    touch_input_init();
+
+    ESP_LOGI(TAG, "Starting render loop");
+
+    // Run render on core 0, audio capture runs inline
+    xTaskCreatePinnedToCore(render_task, "render", 8192, NULL, 5,
+                            NULL, 0);
+}
