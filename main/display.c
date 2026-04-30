@@ -8,7 +8,6 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
@@ -29,7 +28,8 @@ static esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
 static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL;
 static esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
 static SemaphoreHandle_t refresh_finish = NULL;
-static uint16_t *render_buf = NULL;
+static uint16_t *lcd_fb[2] = {NULL, NULL};
+static int cur_fb = 0;
 
 static uint16_t pal_lut[256];
 
@@ -250,25 +250,27 @@ void display_init(void)
     };
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, refresh_finish));
 
-    // Allocate render staging buffer from PSRAM
-    render_buf = heap_caps_malloc(LCD_H_RES * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    assert(render_buf != NULL);
-    memset(render_buf, 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
+    // Get the DPI panel's own framebuffers (allocated in DMA-capable memory)
+    ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(panel_handle, 2,
+                    (void **)&lcd_fb[0], (void **)&lcd_fb[1]));
+    memset(lcd_fb[0], 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
+    memset(lcd_fb[1], 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
 
-    ESP_LOGI(TAG, "Display initialized. Render buffer=%p (%d bytes)",
-             render_buf, LCD_H_RES * LCD_V_RES * (int)sizeof(uint16_t));
+    ESP_LOGI(TAG, "Display initialized. FB0=%p FB1=%p", lcd_fb[0], lcd_fb[1]);
 }
 
 void display_render(void)
 {
     update_palette_lut();
 
+    uint16_t *fb = lcd_fb[cur_fb];
+
     // Scale 240x240 → 720x720 via 3x nearest-neighbor with palette lookup
     for (int sy = 0; sy < (int)BUFF_HEIGHT; sy++) {
         int dy_base = sy * SCALE_FACTOR;
         const uint8_t *src_row = buff + sy * BUFF_WIDTH;
 
-        uint16_t *dst_row0 = render_buf + dy_base * LCD_H_RES;
+        uint16_t *dst_row0 = fb + dy_base * LCD_H_RES;
         for (int sx = 0; sx < (int)BUFF_WIDTH; sx++) {
             uint16_t color = pal_lut[src_row[sx]];
             int dx_base = sx * SCALE_FACTOR;
@@ -277,10 +279,12 @@ void display_render(void)
         }
 
         for (int ry = 1; ry < SCALE_FACTOR; ry++)
-            memcpy(render_buf + (dy_base + ry) * LCD_H_RES,
+            memcpy(fb + (dy_base + ry) * LCD_H_RES,
                    dst_row0, LCD_H_RES * sizeof(uint16_t));
     }
 
-    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, render_buf);
+    // When source is the panel's own framebuffer, draw_bitmap swaps without copying
+    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, fb);
     xSemaphoreTake(refresh_finish, portMAX_DELAY);
+    cur_fb = 1 - cur_fb;
 }
