@@ -285,6 +285,7 @@ void display_render(void)
 
     // When source is the panel's own framebuffer, draw_bitmap swaps without copying
     esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, fb);
-    xSemaphoreTake(refresh_finish, portMAX_DELAY);
+    if (xSemaphoreTake(refresh_finish, pdMS_TO_TICKS(500)) != pdTRUE)
+        ESP_LOGW(TAG, "vsync timeout — on_color_trans_done never fired");
     cur_fb = 1 - cur_fb;
 }

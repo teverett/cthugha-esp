@@ -132,6 +132,11 @@ static void render_task(void *arg)
 {
     ESP_LOGI(TAG, "Render task started on core %d", xPortGetCoreID());
 
+    // Seed the buffer so the visualization starts without audio
+    for (int y = BUFF_BOTTOM - 4; y < (int)BUFF_HEIGHT; y++)
+        for (int x = 0; x < (int)BUFF_WIDTH; x++)
+            buff[y * BUFF_WIDTH + x] = 100 + (uint8_t)((x * 2 + y) & 0x7F);
+
     int count = 0;
     int quiet = 0;
     int frame = 0;
@@ -167,6 +172,12 @@ static void render_task(void *arg)
             quiet = 0;
         } else {
             quiet++;
+            // Reseed a row every ~3s of silence so the visualization doesn't fade to black
+            if (quiet % 90 == 0) {
+                uint8_t *seed = buff + (BUFF_BOTTOM - 2) * BUFF_WIDTH;
+                for (int x = 0; x < (int)BUFF_WIDTH; x++)
+                    seed[x] = 80 + (uint8_t)(esp_random() & 0x7F);
+            }
         }
 
         // Apply display effect (mirroring/rotation)
@@ -176,6 +187,8 @@ static void render_task(void *arg)
         display_render();
 
         frame++;
+        if (frame % 120 == 0)
+            ESP_LOGI(TAG, "frame %d quiet=%d", frame, quiet);
 
         // Touch input polling
         touch_gesture_t gesture = touch_input_poll();
@@ -213,10 +226,10 @@ void app_main(void)
     curdisplay = change_display(esp_random() % 8);
     fill_lut_buffer(esp_random() % numluts);
 
-    // Initialize hardware
+    // Initialize hardware — touch first, audio second (audio shares the I2C bus)
     display_init();
-    audio_capture_init();
     touch_input_init();
+    audio_capture_init();
 
     ESP_LOGI(TAG, "Starting render loop");
 

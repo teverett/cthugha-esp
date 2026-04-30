@@ -14,6 +14,12 @@
 static const char *TAG = "cthugha_touch";
 
 static esp_lcd_touch_handle_t touch_handle = NULL;
+static i2c_master_bus_handle_t s_i2c_bus = NULL;
+
+i2c_master_bus_handle_t touch_get_i2c_bus(void)
+{
+    return s_i2c_bus;
+}
 
 // Gesture detection state
 static int last_x = -1, last_y = -1;
@@ -40,8 +46,8 @@ void touch_input_init(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
     };
-    i2c_master_bus_handle_t i2c_bus;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus));
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &s_i2c_bus));
+    i2c_master_bus_handle_t i2c_bus = s_i2c_bus;
 
     // GT911 touch panel
     esp_lcd_panel_io_handle_t tp_io;
