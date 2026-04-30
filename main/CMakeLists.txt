@@ -14,4 +14,5 @@ idf_component_register(
         esp_lcd
         esp_timer
         freertos
+        esp_hw_support
 )

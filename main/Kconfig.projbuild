@@ -1,53 +1,13 @@
 menu "Cthugha Configuration"
 
-    menu "MIPI-DSI Display"
-        config CTHUGHA_LCD_H_RES
-            int "LCD horizontal resolution"
-            default 720
-
-        config CTHUGHA_LCD_V_RES
-            int "LCD vertical resolution"
-            default 720
-
-        config CTHUGHA_LCD_DPI_CLK_MHZ
-            int "DPI pixel clock (MHz)"
-            default 36
-
-        config CTHUGHA_LCD_DSI_LANE_BITRATE_MBPS
-            int "MIPI-DSI lane bitrate (Mbps)"
-            default 500
-
-        config CTHUGHA_LCD_DSI_NUM_DATA_LANES
-            int "Number of MIPI-DSI data lanes"
-            default 2
-
-        config CTHUGHA_LCD_HSYNC_BACK_PORCH
-            int "HSYNC back porch"
-            default 20
-
-        config CTHUGHA_LCD_HSYNC_FRONT_PORCH
-            int "HSYNC front porch"
-            default 20
-
-        config CTHUGHA_LCD_HSYNC_PULSE_WIDTH
-            int "HSYNC pulse width"
-            default 4
-
-        config CTHUGHA_LCD_VSYNC_BACK_PORCH
-            int "VSYNC back porch"
-            default 20
-
-        config CTHUGHA_LCD_VSYNC_FRONT_PORCH
-            int "VSYNC front porch"
-            default 20
-
-        config CTHUGHA_LCD_VSYNC_PULSE_WIDTH
-            int "VSYNC pulse width"
-            default 4
-
+    menu "LCD Display"
         config CTHUGHA_LCD_BL_GPIO
             int "Backlight GPIO number"
             default 26
+
+        config CTHUGHA_LCD_RST_GPIO
+            int "LCD reset GPIO number"
+            default 27
     endmenu
 
     menu "I2S Microphone"
@@ -55,21 +15,25 @@ menu "Cthugha Configuration"
             int "I2S peripheral number"
             default 0
 
+        config CTHUGHA_I2S_MCLK_GPIO
+            int "I2S master clock GPIO"
+            default 13
+
         config CTHUGHA_I2S_BCK_GPIO
             int "I2S bit clock GPIO"
-            default 34
+            default 12
 
         config CTHUGHA_I2S_WS_GPIO
             int "I2S word select GPIO"
-            default 35
+            default 10
 
         config CTHUGHA_I2S_DIN_GPIO
             int "I2S data in GPIO"
-            default 36
+            default 11
 
         config CTHUGHA_I2S_SAMPLE_RATE
             int "Sample rate (Hz)"
-            default 44100
+            default 16000
     endmenu
 
     menu "I2C Touch"

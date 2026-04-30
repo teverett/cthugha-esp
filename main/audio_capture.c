@@ -15,7 +15,6 @@ static const char *TAG = "cthugha_audio";
 
 static i2s_chan_handle_t rx_handle = NULL;
 
-// Raw sample buffer — we read BUFF_WIDTH samples per frame
 static int16_t raw_samples[BUFF_WIDTH * 2];
 
 int stereo[BUFF_WIDTH][2];
@@ -35,7 +34,7 @@ void audio_capture_init(void)
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
+            .mclk = (gpio_num_t)CONFIG_CTHUGHA_I2S_MCLK_GPIO,
             .bclk = (gpio_num_t)CONFIG_CTHUGHA_I2S_BCK_GPIO,
             .ws   = (gpio_num_t)CONFIG_CTHUGHA_I2S_WS_GPIO,
             .dout = I2S_GPIO_UNUSED,
@@ -47,7 +46,8 @@ void audio_capture_init(void)
             },
         },
     };
-    ESP_ERROR_CHECK(i2s_channel_init_std_rx_mode(rx_handle, &std_cfg));
+    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_384;
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
 
     ESP_LOGI(TAG, "I2S microphone ready (rate=%d)", CONFIG_CTHUGHA_I2S_SAMPLE_RATE);
@@ -65,12 +65,9 @@ int audio_capture_read(void)
 
     int samples_read = bytes_read / sizeof(int16_t);
 
-    // Convert signed 16-bit samples to unsigned 0-255 range
-    // and duplicate mono to both stereo channels
     for (int i = 0; i < (int)BUFF_WIDTH; i++) {
         int16_t raw = (i < samples_read) ? raw_samples[i] : 0;
 
-        // Map -32768..32767 to 0..255
         int val = ((int)raw + 32768) >> 8;
         val = ct_clamp(val, 0, 255);
 

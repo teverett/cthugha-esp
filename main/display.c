@@ -1,26 +1,36 @@
 //
-// Cthugha ESP32-P4 Port — MIPI-DSI LCD display driver
+// Cthugha ESP32-P4 Port — ST7703 MIPI-DSI LCD display driver
 // Scales the 240x240 8-bit indexed buffer to 720x720 RGB565 via 3x nearest-neighbor
 //
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
+#include "esp_ldo_regulator.h"
+#include "esp_lcd_st7703.h"
 #include "driver/gpio.h"
 #include "cthugha.h"
 #include "display.h"
 
 static const char *TAG = "cthugha_display";
 
-static esp_lcd_panel_handle_t panel_handle = NULL;
-static uint16_t *lcd_fb[2] = {NULL, NULL};
-static int cur_fb = 0;
+#define MIPI_DSI_PHY_PWR_LDO_CHAN        3
+#define MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV  2500
+#define LCD_BK_LIGHT_ON_LEVEL            0
 
-// Pre-computed palette LUT: indexed color → RGB565
+static esp_lcd_panel_handle_t panel_handle = NULL;
+static esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL;
+static esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
+static SemaphoreHandle_t refresh_finish = NULL;
+static uint16_t *render_buf = NULL;
+
 static uint16_t pal_lut[256];
 
 static inline uint16_t rgb888_to_rgb565(uint8_t r, uint8_t g, uint8_t b)
@@ -47,8 +57,6 @@ int curdisplay = 0;
 
 static void display_upwards(void)
 {
-    // Direct: buff maps straight to output
-    // (no transform, identity mapping)
 }
 
 static void display_downwards(void)
@@ -170,91 +178,97 @@ void flip_screens(void)
     shadow = temp;
 }
 
+static IRAM_ATTR bool on_color_trans_done(esp_lcd_panel_handle_t panel,
+                                           esp_lcd_dpi_panel_event_data_t *edata,
+                                           void *user_ctx)
+{
+    BaseType_t need_yield = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &need_yield);
+    return (need_yield == pdTRUE);
+}
+
 void display_init(void)
 {
-    ESP_LOGI(TAG, "Initializing MIPI-DSI display %dx%d", LCD_H_RES, LCD_V_RES);
+    ESP_LOGI(TAG, "Initializing ST7703 MIPI-DSI display %dx%d", LCD_H_RES, LCD_V_RES);
 
-    // Backlight
+    // Backlight (active LOW on this board)
     gpio_config_t bl_cfg = {
         .pin_bit_mask = 1ULL << CONFIG_CTHUGHA_LCD_BL_GPIO,
         .mode = GPIO_MODE_OUTPUT,
     };
     gpio_config(&bl_cfg);
-    gpio_set_level(CONFIG_CTHUGHA_LCD_BL_GPIO, 1);
+    gpio_set_level(CONFIG_CTHUGHA_LCD_BL_GPIO, LCD_BK_LIGHT_ON_LEVEL);
 
-    // MIPI-DSI bus
-    esp_lcd_dsi_bus_handle_t dsi_bus;
-    esp_lcd_dsi_bus_config_t bus_cfg = {
-        .bus_id = 0,
-        .num_data_lanes = CONFIG_CTHUGHA_LCD_DSI_NUM_DATA_LANES,
-        .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
-        .lane_bit_rate_mbps = CONFIG_CTHUGHA_LCD_DSI_LANE_BITRATE_MBPS,
+    // Power the MIPI DSI PHY via internal LDO
+    ESP_LOGI(TAG, "MIPI DSI PHY power on");
+    esp_ldo_channel_config_t ldo_cfg = {
+        .chan_id = MIPI_DSI_PHY_PWR_LDO_CHAN,
+        .voltage_mv = MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_cfg, &dsi_bus));
+    ESP_ERROR_CHECK(esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi_phy));
 
-    // DBI panel IO for sending init commands to the LCD controller IC
-    esp_lcd_panel_io_handle_t dbi_io;
-    esp_lcd_dbi_io_config_t dbi_cfg = {
-        .virtual_channel = 0,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-    };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &dbi_io));
+    // MIPI-DSI bus (2 data lanes, config from ST7703 macro)
+    ESP_LOGI(TAG, "Initialize MIPI DSI bus");
+    esp_lcd_dsi_bus_config_t bus_config = ST7703_PANEL_BUS_DSI_2CH_CONFIG();
+    ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus));
 
-    // DPI panel for continuous pixel output
-    esp_lcd_dpi_panel_config_t dpi_cfg = {
-        .virtual_channel = 0,
-        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = CONFIG_CTHUGHA_LCD_DPI_CLK_MHZ,
-        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
-        .num_fbs = 2,
-        .video_timing = {
-            .h_size = LCD_H_RES,
-            .v_size = LCD_V_RES,
-            .hsync_back_porch  = CONFIG_CTHUGHA_LCD_HSYNC_BACK_PORCH,
-            .hsync_pulse_width = CONFIG_CTHUGHA_LCD_HSYNC_PULSE_WIDTH,
-            .hsync_front_porch = CONFIG_CTHUGHA_LCD_HSYNC_FRONT_PORCH,
-            .vsync_back_porch  = CONFIG_CTHUGHA_LCD_VSYNC_BACK_PORCH,
-            .vsync_pulse_width = CONFIG_CTHUGHA_LCD_VSYNC_PULSE_WIDTH,
-            .vsync_front_porch = CONFIG_CTHUGHA_LCD_VSYNC_FRONT_PORCH,
-        },
+    // DBI command interface for panel IC initialization
+    ESP_LOGI(TAG, "Install panel IO");
+    esp_lcd_dbi_io_config_t dbi_config = ST7703_PANEL_IO_DBI_CONFIG();
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io));
+
+    // ST7703 panel driver with DPI pixel output
+    ESP_LOGI(TAG, "Install ST7703 LCD driver");
+    esp_lcd_dpi_panel_config_t dpi_config = ST7703_720_720_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
+    dpi_config.num_fbs = 2;
+    dpi_config.flags.use_dma2d = true;
+
+    st7703_vendor_config_t vendor_config = {
         .flags = {
-            .use_dma2d = true,
+            .use_mipi_interface = 1,
+        },
+        .mipi_config = {
+            .dsi_bus = mipi_dsi_bus,
+            .dpi_config = &dpi_config,
         },
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_dpi(dsi_bus, &dpi_cfg, &panel_handle));
-
-    // TODO: Send LCD controller IC init commands via dbi_io here.
-    // The exact sequence depends on the panel IC (JD9365, ST7701S, etc.)
-    // on the specific Waveshare ESP32-P4-WIFI6-Touch-LCD-4B board.
-    // Check the board schematic and panel datasheet.
-
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = CONFIG_CTHUGHA_LCD_RST_GPIO,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = LCD_BPP,
+        .vendor_config = &vendor_config,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7703(mipi_dbi_io, &panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
-    // Get the DPI framebuffer pointers
-    ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(panel_handle, 2,
-                    (void **)&lcd_fb[0], (void **)&lcd_fb[1]));
+    // Vsync / transfer-done callback
+    refresh_finish = xSemaphoreCreateBinary();
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {
+        .on_color_trans_done = on_color_trans_done,
+    };
+    ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, refresh_finish));
 
-    // Clear both framebuffers
-    memset(lcd_fb[0], 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
-    memset(lcd_fb[1], 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
+    // Allocate render staging buffer from PSRAM
+    render_buf = heap_caps_malloc(LCD_H_RES * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    assert(render_buf != NULL);
+    memset(render_buf, 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
 
-    ESP_LOGI(TAG, "Display initialized. FB0=%p FB1=%p", lcd_fb[0], lcd_fb[1]);
+    ESP_LOGI(TAG, "Display initialized. Render buffer=%p (%d bytes)",
+             render_buf, LCD_H_RES * LCD_V_RES * (int)sizeof(uint16_t));
 }
 
 void display_render(void)
 {
     update_palette_lut();
 
-    uint16_t *fb = lcd_fb[cur_fb];
-
     // Scale 240x240 → 720x720 via 3x nearest-neighbor with palette lookup
     for (int sy = 0; sy < (int)BUFF_HEIGHT; sy++) {
         int dy_base = sy * SCALE_FACTOR;
         const uint8_t *src_row = buff + sy * BUFF_WIDTH;
 
-        // Build one scaled row
-        uint16_t *dst_row0 = fb + dy_base * LCD_H_RES;
+        uint16_t *dst_row0 = render_buf + dy_base * LCD_H_RES;
         for (int sx = 0; sx < (int)BUFF_WIDTH; sx++) {
             uint16_t color = pal_lut[src_row[sx]];
             int dx_base = sx * SCALE_FACTOR;
@@ -262,13 +276,11 @@ void display_render(void)
                 dst_row0[dx_base + rx] = color;
         }
 
-        // Replicate to remaining rows in the scale block
         for (int ry = 1; ry < SCALE_FACTOR; ry++)
-            memcpy(fb + (dy_base + ry) * LCD_H_RES,
+            memcpy(render_buf + (dy_base + ry) * LCD_H_RES,
                    dst_row0, LCD_H_RES * sizeof(uint16_t));
     }
 
-    // Swap framebuffer for next frame
-    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, fb);
-    cur_fb = 1 - cur_fb;
+    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, render_buf);
+    xSemaphoreTake(refresh_finish, portMAX_DELAY);
 }

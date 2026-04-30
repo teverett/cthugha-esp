@@ -14,19 +14,33 @@ MIPI-DSI touchscreen at full framerate.
 
 | Component | Spec |
 |-----------|------|
-| MCU | ESP32-P4, dual-core RISC-V @ 400 MHz |
-| Display | 4" 720x720 RGB LCD, MIPI-DSI interface |
+| MCU | ESP32-P4, dual-core RISC-V @ 360 MHz |
+| Display | 4" 720x720 ST7703, MIPI-DSI interface |
 | Touch | Capacitive multi-touch (GT911, I2C) |
 | Microphone | Onboard SMD MEMS mic (I2S) |
 | RAM | 32 MB PSRAM |
-| Flash | 16 MB |
+| Flash | 32 MB |
+
+### Board GPIO Assignments
+
+| Function | GPIO |
+|----------|------|
+| LCD Backlight | 26 (active LOW) |
+| LCD Reset | 27 |
+| I2S MCLK | 13 |
+| I2S BCLK | 12 |
+| I2S WS | 10 |
+| I2S DIN (mic) | 11 |
+| I2C SDA | 7 |
+| I2C SCL | 8 |
+| Touch RST | 5 |
+| Touch INT | 6 |
 
 ## Prerequisites
 
 ### ESP-IDF Toolchain
 
-Install **ESP-IDF v5.3 or later** — this is the minimum version with
-ESP32-P4 support.
+Install **ESP-IDF v5.5.1 or later**.
 
 Follow the official guide for your OS:
 https://docs.espressif.com/projects/esp-idf/en/stable/esp32p4/get-started/
@@ -36,7 +50,7 @@ https://docs.espressif.com/projects/esp-idf/en/stable/esp32p4/get-started/
 ```bash
 mkdir -p ~/esp
 cd ~/esp
-git clone -b v5.4 --recursive https://github.com/espressif/esp-idf.git
+git clone -b v5.5.1 --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
 ./install.sh esp32p4
 source export.sh
@@ -47,12 +61,12 @@ source export.sh
 Use the ESP-IDF Tools Installer from
 https://dl.espressif.com/dl/esp-idf/ — it sets up Python, CMake, Ninja,
 and the RISC-V cross-compiler. After installation, open the
-"ESP-IDF 5.4 PowerShell" shortcut.
+"ESP-IDF 5.5 PowerShell" shortcut.
 
 ### Verify Installation
 
 ```bash
-idf.py --version          # should print 5.3.x or later
+idf.py --version          # should print 5.5.x or later
 riscv32-esp-elf-gcc -v    # RISC-V cross-compiler for ESP32-P4
 ```
 
@@ -67,7 +81,7 @@ idf.py set-target esp32p4
 This creates `sdkconfig` from `sdkconfig.defaults` with the correct CPU,
 PSRAM, and peripheral settings.
 
-### 2. Board-specific pin configuration
+### 2. Board-specific pin configuration (optional)
 
 Open menuconfig:
 
@@ -76,32 +90,25 @@ idf.py menuconfig
 ```
 
 Navigate to **Cthugha Configuration** and verify/adjust the GPIO
-assignments for your specific board revision. The three sub-menus are:
+assignments for your specific board revision:
 
-**MIPI-DSI Display**
+**LCD Display**
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| LCD horizontal resolution | 720 | Panel width in pixels |
-| LCD vertical resolution | 720 | Panel height in pixels |
-| DPI pixel clock (MHz) | 36 | Pixel clock for DPI output |
-| MIPI-DSI lane bitrate (Mbps) | 500 | Per-lane data rate |
-| Number of MIPI-DSI data lanes | 2 | 1, 2, or 4 |
-| HSYNC back/front porch | 20 | Horizontal blanking |
-| HSYNC pulse width | 4 | |
-| VSYNC back/front porch | 20 | Vertical blanking |
-| VSYNC pulse width | 4 | |
-| Backlight GPIO | 26 | LCD backlight enable pin |
+| Backlight GPIO | 26 | LCD backlight enable pin (active LOW) |
+| LCD reset GPIO | 27 | ST7703 hardware reset pin |
 
 **I2S Microphone**
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | I2S peripheral number | 0 | I2S port (0 or 1) |
-| I2S bit clock GPIO | 34 | BCK / SCK pin |
-| I2S word select GPIO | 35 | WS / LRCK pin |
-| I2S data in GPIO | 36 | SD / DOUT pin (mic output → ESP input) |
-| Sample rate (Hz) | 44100 | Audio capture rate |
+| I2S master clock GPIO | 13 | MCLK pin |
+| I2S bit clock GPIO | 12 | BCK / SCK pin |
+| I2S word select GPIO | 10 | WS / LRCK pin |
+| I2S data in GPIO | 11 | SD / DOUT pin (mic output → ESP input) |
+| Sample rate (Hz) | 16000 | Audio capture rate |
 
 **I2C Touch**
 
@@ -113,25 +120,15 @@ assignments for your specific board revision. The three sub-menus are:
 | Touch reset GPIO | 5 | GT911 reset pin |
 | Touch interrupt GPIO | 6 | GT911 interrupt pin |
 
-> **Important:** The default GPIO numbers are starting estimates. Check
-> the schematic for your board revision and correct them before building.
-
-### 3. LCD panel controller initialization
-
-The MIPI-DSI display requires an initialization command sequence specific
-to the LCD controller IC on the panel (e.g. JD9365, ST7701S). This
-sequence must be added to the `display_init()` function in
-`main/display.c` at the marked `TODO`. Consult the panel datasheet or
-the Waveshare BSP examples for the correct sequence.
-
 ## Build
 
 ```bash
 idf.py build
 ```
 
-The first build downloads the managed component `esp_lcd_touch_gt911`
-automatically from the Espressif Component Registry.
+The first build downloads managed components (`waveshare/esp_lcd_st7703`,
+`espressif/esp_lcd_touch_gt911`) automatically from the Espressif
+Component Registry.
 
 Build output goes to `build/`. The firmware binary is
 `build/cthugha_esp.bin`.
@@ -193,7 +190,7 @@ The rendering pipeline runs as a FreeRTOS task at ~60 fps:
 The internal 240x240 framebuffer uses 8-bit indexed color with a 256-entry
 palette. The LCD output stage looks up each pixel in the current palette
 to get RGB888, converts to RGB565, and replicates each pixel in a 3x3
-block to fill the 720x720 display.
+block to fill the 720x720 display via the ST7703 MIPI-DSI panel driver.
 
 ## Effects
 
@@ -231,7 +228,7 @@ cthugha_esp/
 │   ├── waves.c             # 24 wave renderers (ported from MODES.C + PETE.C)
 │   ├── palettes.c/h        # 8 procedural color palettes
 │   ├── translate.c         # 4 spatial remap effects
-│   ├── display.c/h         # MIPI-DSI LCD driver, display modes, 3x scaling
+│   ├── display.c/h         # ST7703 MIPI-DSI driver, display modes, 3x scaling
 │   ├── audio_capture.c/h   # I2S MEMS microphone capture
 │   └── touch_input.c/h     # GT911 capacitive touch with gesture detection
 ```
