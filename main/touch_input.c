@@ -8,6 +8,7 @@
 #include "driver/i2c_master.h"
 #include "esp_lcd_touch_gt911.h"
 #include "esp_log.h"
+#include "display.h"
 #include "touch_input.h"
 
 static const char *TAG = "cthugha_touch";
@@ -49,8 +50,8 @@ void touch_input_init(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io));
 
     esp_lcd_touch_config_t touch_cfg = {
-        .x_max = CONFIG_CTHUGHA_LCD_H_RES,
-        .y_max = CONFIG_CTHUGHA_LCD_V_RES,
+        .x_max = LCD_H_RES,
+        .y_max = LCD_V_RES,
         .rst_gpio_num = (gpio_num_t)CONFIG_CTHUGHA_TOUCH_RST_GPIO,
         .int_gpio_num = (gpio_num_t)CONFIG_CTHUGHA_TOUCH_INT_GPIO,
         .levels = {
