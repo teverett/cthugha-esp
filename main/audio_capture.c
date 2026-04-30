@@ -1,7 +1,12 @@
 //
-// Cthugha ESP32-P4 Port — I2S audio capture via ES8311 codec
-// ES8311 initialized directly over the shared I2C master bus (new API).
-// I2S runs full-duplex stereo (TX+RX); L channel carries the ADC mic data.
+// Cthugha ESP32-P4 Port — I2S audio capture via ES7210 ADC codec
+//
+// Board has two audio chips:
+//   ES8311 (0x18) — DAC/speaker only, no ADC
+//   ES7210 (0x40) — 4-channel ADC/microphone codec (this one)
+//
+// ES7210 is initialized in I2S slave mode with MIC1+MIC2 active.
+// ESP32 I2S is master (generates MCLK, BCLK, WS). Stereo: L=MIC1, R=MIC2.
 //
 
 #include "freertos/FreeRTOS.h"
@@ -17,104 +22,133 @@ static const char *TAG = "cthugha_audio";
 
 static i2s_chan_handle_t tx_handle = NULL;
 static i2s_chan_handle_t rx_handle = NULL;
-static i2c_master_dev_handle_t es8311_dev = NULL;
+static i2c_master_dev_handle_t es7210_dev = NULL;
 
 // Stereo interleaved [L0,R0,L1,R1,...] — 240 pairs = 480 int16 = 960 bytes
+// L=MIC1, R=MIC2
 static int16_t raw_samples[BUFF_WIDTH * 2];
 
 int stereo[BUFF_WIDTH][2];
 int minnoise = 4;
 
-// --- ES8311 codec via new I2C master API ---
-// Address: CE pin low = 0x18, CE pin high = 0x19
-#define ES8311_ADDR 0x18
+// --- ES7210 ADC codec via new I2C master API ---
+// AD1=AD0=0 → 7-bit address 0x40 (stored as 0x80 in 8-bit convention)
+#define ES7210_ADDR 0x40
 
-static esp_err_t es_write(uint8_t reg, uint8_t val)
+static esp_err_t e7_write(uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = {reg, val};
-    return i2c_master_transmit(es8311_dev, buf, 2, pdMS_TO_TICKS(100));
+    return i2c_master_transmit(es7210_dev, buf, 2, pdMS_TO_TICKS(100));
 }
 
-static esp_err_t es_read(uint8_t reg, uint8_t *val)
+static esp_err_t e7_read(uint8_t reg, uint8_t *val)
 {
-    return i2c_master_transmit_receive(es8311_dev, &reg, 1, val, 1, pdMS_TO_TICKS(100));
+    return i2c_master_transmit_receive(es7210_dev, &reg, 1, val, 1, pdMS_TO_TICKS(100));
 }
 
-// Read-modify-write: keep bits under keep_mask, OR in or_val
-static esp_err_t es_rmw(uint8_t reg, uint8_t keep_mask, uint8_t or_val)
+// Read-modify-write: (reg & ~mask) | (mask & val)
+static void e7_update(uint8_t reg, uint8_t mask, uint8_t val)
 {
     uint8_t cur = 0;
-    esp_err_t err = es_read(reg, &cur);
-    if (err != ESP_OK) return err;
-    return es_write(reg, (cur & keep_mask) | or_val);
+    e7_read(reg, &cur);
+    e7_write(reg, (cur & ~mask) | (mask & val));
 }
 
-static void es8311_codec_init(void)
+static void es7210_codec_init(void)
 {
     i2c_master_bus_handle_t bus = touch_get_i2c_bus();
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = ES8311_ADDR,
+        .device_address  = ES7210_ADDR,
         .scl_speed_hz    = 100000,
     };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev_cfg, &es8311_dev));
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev_cfg, &es7210_dev));
 
-    // Reset and power on
-    ESP_ERROR_CHECK(es_write(0x00, 0x1F));
-    vTaskDelay(pdMS_TO_TICKS(20));
-    ESP_ERROR_CHECK(es_write(0x00, 0x00));
-    ESP_ERROR_CHECK(es_write(0x00, 0x80));
+    // Probe
+    uint8_t r00 = 0;
+    if (e7_read(0x00, &r00) != ESP_OK) {
+        ESP_LOGE(TAG, "ES7210 not found at 0x%02X", ES7210_ADDR);
+        return;
+    }
+    ESP_LOGI(TAG, "ES7210 found at 0x%02X, REG00=%02X", ES7210_ADDR, r00);
 
-    // Enable all clocks; MCLK sourced from MCLK pin
-    ESP_ERROR_CHECK(es_write(0x01, 0x3F));
+    // Reset and enable
+    ESP_ERROR_CHECK(e7_write(0x00, 0xFF)); // reset
+    ESP_ERROR_CHECK(e7_write(0x00, 0x41)); // deassert
+    ESP_ERROR_CHECK(e7_write(0x01, 0x3F)); // all clocks on
 
-    // Clock dividers for MCLK=6144000 Hz, rate=16000 Hz
-    // coeff_div entry: pre_div=3, pre_multi=1(2x), adc_div=1, dac_div=1,
-    //                  lrck_h=0x00, lrck_l=0xFF, bclk_div=4, osr=0x10
-    ESP_ERROR_CHECK(es_rmw(0x02, 0x07, 0x48)); // (pre_div-1)<<5 | pre_multi<<3
-    ESP_ERROR_CHECK(es_write(0x03, 0x10));      // ADC OSR
-    ESP_ERROR_CHECK(es_write(0x04, 0x10));      // DAC OSR
-    ESP_ERROR_CHECK(es_write(0x05, 0x00));      // ADC/DAC clock dividers = 1
-    // REG06: clear SCLK-inv (bit5), set BCLK div=4 (bits[4:0]=3)
-    ESP_ERROR_CHECK(es_rmw(0x06, 0xC0, 0x03));
-    // REG07: clear tri-state (bit7), set LRCK_H=0 — use mask 0x40 to explicitly clear bit7
-    ESP_ERROR_CHECK(es_rmw(0x07, 0x40, 0x00));
-    ESP_ERROR_CHECK(es_write(0x08, 0xFF));      // LRCK_L = 255
+    // Timing
+    ESP_ERROR_CHECK(e7_write(0x09, 0x30));
+    ESP_ERROR_CHECK(e7_write(0x0A, 0x30));
 
-    // Serial port: I2S slave, 16-bit resolution
-    ESP_ERROR_CHECK(es_rmw(0x00, 0xBF, 0x00)); // slave (keep bit7, clear bit6)
-    ESP_ERROR_CHECK(es_write(0x09, 0x0C));      // SDP In (DAC): 16-bit I2S
-    ESP_ERROR_CHECK(es_write(0x0A, 0x0C));      // SDP Out (ADC): 16-bit I2S
+    // HPF
+    ESP_ERROR_CHECK(e7_write(0x23, 0x2A));
+    ESP_ERROR_CHECK(e7_write(0x22, 0x0A));
+    ESP_ERROR_CHECK(e7_write(0x20, 0x0A));
+    ESP_ERROR_CHECK(e7_write(0x21, 0x2A));
 
-    // Power up analog circuitry and ADC
-    ESP_ERROR_CHECK(es_write(0x0D, 0x01)); // power up analog
-    ESP_ERROR_CHECK(es_write(0x0E, 0x02)); // enable PGA + ADC modulator
-    ESP_ERROR_CHECK(es_write(0x12, 0x00)); // power up DAC
-    ESP_ERROR_CHECK(es_write(0x13, 0x10)); // enable headphone output
-    ESP_ERROR_CHECK(es_write(0x1C, 0x6A)); // ADC equalizer bypass
-    ESP_ERROR_CHECK(es_write(0x37, 0x08)); // bypass DAC equalizer
+    // I2S slave mode
+    e7_update(0x08, 0x01, 0x00);
 
-    // Microphone: analog mic, max PGA + 42 dB preamp gain
-    ESP_ERROR_CHECK(es_write(0x17, 0xC8)); // ADC digital gain
-    ESP_ERROR_CHECK(es_write(0x14, 0x1A)); // analog MIC, max PGA
-    ESP_ERROR_CHECK(es_write(0x16, 0x07)); // mic preamp gain: 42 dB
+    // Analog power, MIC bias 2.87V
+    ESP_ERROR_CHECK(e7_write(0x40, 0x43));
+    ESP_ERROR_CHECK(e7_write(0x41, 0x70));
+    ESP_ERROR_CHECK(e7_write(0x42, 0x70));
 
-    // Read back key registers to verify writes took effect
-    uint8_t r00, r01, r07, r09, r0a, r0e, r14;
-    es_read(0x00, &r00); es_read(0x01, &r01); es_read(0x07, &r07);
-    es_read(0x09, &r09); es_read(0x0A, &r0a);
-    es_read(0x0E, &r0e); es_read(0x14, &r14);
-    ESP_LOGI(TAG, "ES8311 readback: R00=%02X R01=%02X R07=%02X R09=%02X R0A=%02X R0E=%02X R14=%02X",
-             r00, r01, r07, r09, r0a, r0e, r14);
-    ESP_LOGI(TAG, "ES8311 codec initialized at I2C addr 0x%02X", ES8311_ADDR);
+    // OSR=32, clock divider init
+    ESP_ERROR_CHECK(e7_write(0x07, 0x20));
+    ESP_ERROR_CHECK(e7_write(0x02, 0xC1));
+
+    // Mic select: disable all, then enable MIC1+MIC2 with 30dB gain
+    e7_update(0x43, 0x10, 0x00); // MIC1 disable
+    e7_update(0x44, 0x10, 0x00); // MIC2 disable
+    e7_update(0x45, 0x10, 0x00); // MIC3 disable
+    e7_update(0x46, 0x10, 0x00); // MIC4 disable
+    e7_write(0x4B, 0xFF);        // MIC12 power down
+    e7_write(0x4C, 0xFF);        // MIC34 power down
+    e7_update(0x01, 0x0B, 0x00); // enable clocks for MIC1/2 path
+    e7_write(0x4B, 0x00);        // power up MIC12
+    e7_update(0x43, 0x1F, 0x1A); // MIC1 on, 30dB (bit4=1, gain=0x0A)
+    e7_update(0x44, 0x1F, 0x1A); // MIC2 on, 30dB
+
+    // Serial port: 16-bit I2S (bits[7:5]=0b011, bits[1:0]=0b00)
+    ESP_ERROR_CHECK(e7_write(0x11, 0x60));
+    // Non-TDM for 2 mics
+    ESP_ERROR_CHECK(e7_write(0x12, 0x00));
+
+    // Start ADC — sequence from es7210_start()
+    ESP_ERROR_CHECK(e7_write(0x01, 0x34)); // clock state: MIC1/2 on, MIC3/4 off
+    ESP_ERROR_CHECK(e7_write(0x06, 0x00)); // power down off (= powered up)
+    ESP_ERROR_CHECK(e7_write(0x40, 0x43));
+    ESP_ERROR_CHECK(e7_write(0x47, 0x08)); // MIC1 normal power
+    ESP_ERROR_CHECK(e7_write(0x48, 0x08)); // MIC2 normal power
+    ESP_ERROR_CHECK(e7_write(0x49, 0x08)); // MIC3 normal power
+    ESP_ERROR_CHECK(e7_write(0x4A, 0x08)); // MIC4 normal power
+    // mic_select again (matches es7210_start)
+    e7_update(0x43, 0x10, 0x00);
+    e7_update(0x44, 0x10, 0x00);
+    e7_update(0x45, 0x10, 0x00);
+    e7_update(0x46, 0x10, 0x00);
+    e7_write(0x4B, 0xFF);
+    e7_write(0x4C, 0xFF);
+    e7_update(0x01, 0x0B, 0x00);
+    e7_write(0x4B, 0x00);
+    e7_update(0x43, 0x1F, 0x1A);
+    e7_update(0x44, 0x1F, 0x1A);
+    e7_write(0x12, 0x00);
+    ESP_ERROR_CHECK(e7_write(0x40, 0x43));
+    ESP_ERROR_CHECK(e7_write(0x00, 0x71)); // start ADC
+    ESP_ERROR_CHECK(e7_write(0x00, 0x41));
+
+    ESP_LOGI(TAG, "ES7210 mic codec initialized (MIC1=L, MIC2=R, 30dB gain)");
 }
 
 void audio_capture_init(void)
 {
-    ESP_LOGI(TAG, "Initializing I2S+ES8311 on I2S%d", CONFIG_CTHUGHA_I2S_NUM);
+    ESP_LOGI(TAG, "Initializing I2S+ES7210 on I2S%d", CONFIG_CTHUGHA_I2S_NUM);
 
-    // Open duplex (TX+RX) — matches demo config; ensures BCLK/WS are driven
+    // Full duplex (TX+RX): TX drives DOUT to ES8311 DAC (silence), RX reads ES7210 ADC
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(
         CONFIG_CTHUGHA_I2S_NUM, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
@@ -139,16 +173,16 @@ void audio_capture_init(void)
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
 
-    // Codec initialized after I2S clocks are running (ES8311 needs MCLK)
-    es8311_codec_init();
+    // Codec initialized after I2S clocks are running (ES7210 uses MCLK)
+    es7210_codec_init();
 
-    ESP_LOGI(TAG, "Audio ready (rate=%d stereo)", CONFIG_CTHUGHA_I2S_SAMPLE_RATE);
+    ESP_LOGI(TAG, "Audio ready (rate=%d stereo MIC1+MIC2)", CONFIG_CTHUGHA_I2S_SAMPLE_RATE);
 }
 
 int audio_capture_read(void)
 {
     size_t bytes_read = 0;
-    // 240 stereo pairs × 4 bytes = 960 bytes
+    // 240 stereo pairs × 4 bytes = 960 bytes; L=MIC1, R=MIC2
     esp_err_t err = i2s_channel_read(rx_handle, raw_samples,
                                      BUFF_WIDTH * 2 * sizeof(int16_t),
                                      &bytes_read, pdMS_TO_TICKS(50));
@@ -170,14 +204,12 @@ int audio_capture_read(void)
     if (err != ESP_OK || bytes_read == 0)
         return 0;
 
-    // Stereo interleaved: even indices = L channel (ADC mic data)
     int pairs = (int)(bytes_read / (2 * sizeof(int16_t)));
     for (int i = 0; i < (int)BUFF_WIDTH; i++) {
-        int16_t raw = (i < pairs) ? raw_samples[i * 2] : 0;
-        int val = ((int)raw + 32768) >> 8;
-        val = ct_clamp(val, 0, 255);
-        stereo[i][0] = val;
-        stereo[i][1] = val;
+        int16_t l = (i < pairs) ? raw_samples[i * 2]     : 0;
+        int16_t r = (i < pairs) ? raw_samples[i * 2 + 1] : 0;
+        stereo[i][0] = ct_clamp(((int)l + 32768) >> 8, 0, 255);
+        stereo[i][1] = ct_clamp(((int)r + 32768) >> 8, 0, 255);
     }
 
     return 1;
