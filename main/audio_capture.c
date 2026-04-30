@@ -29,7 +29,11 @@ static i2c_master_dev_handle_t es7210_dev = NULL;
 static int16_t raw_samples[BUFF_WIDTH * 2];
 
 int stereo[BUFF_WIDTH][2];
-int minnoise = 4;
+int minnoise = 2;
+// Software gain multiplier: 256 = map ±128 raw to full 0-255 range
+// Increase if waveforms are too small; decrease if they overdrive/clip
+// With raw values of ±70-90 (observed), 256 gives good room-noise reactivity
+int mic_amplify = 200;
 
 // --- ES7210 ADC codec via new I2C master API ---
 // AD1=AD0=0 → 7-bit address 0x40 (stored as 0x80 in 8-bit convention)
@@ -109,8 +113,8 @@ static void es7210_codec_init(void)
     e7_write(0x4C, 0xFF);        // MIC34 power down
     e7_update(0x01, 0x0B, 0x00); // enable clocks for MIC1/2 path
     e7_write(0x4B, 0x00);        // power up MIC12
-    e7_update(0x43, 0x1F, 0x1A); // MIC1 on, 30dB (bit4=1, gain=0x0A)
-    e7_update(0x44, 0x1F, 0x1A); // MIC2 on, 30dB
+    e7_update(0x43, 0x1F, 0x1E); // MIC1 on, 37.5dB max (bit4=1, gain=0x0E)
+    e7_update(0x44, 0x1F, 0x1E); // MIC2 on, 37.5dB max
 
     // Serial port: 16-bit I2S (bits[7:5]=0b011, bits[1:0]=0b00)
     ESP_ERROR_CHECK(e7_write(0x11, 0x60));
@@ -208,8 +212,12 @@ int audio_capture_read(void)
     for (int i = 0; i < (int)BUFF_WIDTH; i++) {
         int16_t l = (i < pairs) ? raw_samples[i * 2]     : 0;
         int16_t r = (i < pairs) ? raw_samples[i * 2 + 1] : 0;
-        stereo[i][0] = ct_clamp(((int)l + 32768) >> 8, 0, 255);
-        stereo[i][1] = ct_clamp(((int)r + 32768) >> 8, 0, 255);
+        // 128 = silence midpoint; mic_amplify scales the deviation.
+        // mic_amplify=1   → ±32768 raw maps to 0-255  (very quiet mics)
+        // mic_amplify=256 → ±128 raw maps to 0-255    (strong signal)
+        // mic_amplify=512 → ±64 raw maps to 0-255     (will clip louder sounds)
+        stereo[i][0] = ct_clamp(128 + (int)l * mic_amplify / 256, 0, 255);
+        stereo[i][1] = ct_clamp(128 + (int)r * mic_amplify / 256, 0, 255);
     }
 
     return 1;
