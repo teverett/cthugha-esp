@@ -217,12 +217,12 @@ int audio_capture_read(void)
     // 50 * 256 = 12800
     mic_amplify = ct_clamp((int)(12800.0f / agc_level), 1, 512);
 
-    static int dbg = 0;
-    if (++dbg >= 300) {
-        dbg = 0;
-        ESP_LOGI(TAG, "AGC: mav=%.1f amplify=%d  L[0]=%d R[0]=%d",
-                 agc_level, mic_amplify, raw_samples[0], raw_samples[1]);
-    }
+    // static int dbg = 0;
+    // if (++dbg >= 300) {
+    //     dbg = 0;
+    //     ESP_LOGI(TAG, "AGC: mav=%.1f amplify=%d  L[0]=%d R[0]=%d",
+    //              agc_level, mic_amplify, raw_samples[0], raw_samples[1]);
+    // }
 
     for (int i = 0; i < (int)BUFF_WIDTH; i++) {
         int16_t l = (i < pairs) ? raw_samples[i * 2]     : 0;

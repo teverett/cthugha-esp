@@ -226,8 +226,8 @@ static void render_task(void *arg)
         display_render();
 
         frame++;
-        if (frame % 120 == 0)
-            ESP_LOGI(TAG, "frame %d quiet=%d", frame, quiet);
+        // if (frame % 120 == 0)
+        //     ESP_LOGI(TAG, "frame %d quiet=%d", frame, quiet);
 
         // Touch input polling
         touch_gesture_t gesture = touch_input_poll();
