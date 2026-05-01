@@ -58,6 +58,11 @@ static void gen_tunnel(uint16_t *map)
 
 static void gen_fisheye(uint16_t *map)
 {
+    // True fisheye: each destination pixel reads from a source FARTHER from center.
+    // nr = sqrt(r) > r for r<1, so source_dist = nr/r * dist = dist/sqrt(r) > dist.
+    // Near-center pixels read from outer areas (where flame content lives).
+    // The old formula used nr = r*r (barrel distortion, source CLOSER to dark center),
+    // which drained the buffer to black.
     int cx = BUFF_WIDTH / 2;
     int cy = BUFF_HEIGHT / 2;
     float max_r = sqrtf((float)(cx * cx + cy * cy));
@@ -67,7 +72,7 @@ static void gen_fisheye(uint16_t *map)
             float dy = (float)(y - cy);
             float dist = sqrtf(dx * dx + dy * dy);
             float r = dist / max_r;
-            float nr = r * r;
+            float nr = sqrtf(r);
             int sx = (int)(dx * nr / (r + 0.001f) + cx);
             int sy = (int)(dy * nr / (r + 0.001f) + cy);
             sx = ct_clamp(sx, 0, BUFF_WIDTH - 1);

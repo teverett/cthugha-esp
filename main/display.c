@@ -105,11 +105,14 @@ static void display_kaleidoscope(void)
 
 static void display_rot90_mirror(void)
 {
+    // Fix: read from rows (BUFF_WIDTH-1-x) so the left half covers rows 239..120
+    // (bottom half, where wave seeds) rather than rows 0..119 (dark top half).
+    // Right half mirrors: reads rows 120..239. Both halves include the seeded area.
     for (unsigned int y = 0; y < BUFF_HEIGHT; y++) {
         for (unsigned int x = 0; x < BUFF_WIDTH / 2; x++)
-            shadow[y * BUFF_WIDTH + x] = buff[x * BUFF_WIDTH + y];
-        for (unsigned int x = BUFF_WIDTH / 2; x < BUFF_WIDTH; x++)
             shadow[y * BUFF_WIDTH + x] = buff[(BUFF_WIDTH - 1 - x) * BUFF_WIDTH + y];
+        for (unsigned int x = BUFF_WIDTH / 2; x < BUFF_WIDTH; x++)
+            shadow[y * BUFF_WIDTH + x] = buff[x * BUFF_WIDTH + y];
     }
     flip_screens();
 }
@@ -119,9 +122,9 @@ static void display_rot90_mirror2(void)
     for (unsigned int y = 0; y < BUFF_HEIGHT; y++) {
         unsigned int src_col = BUFF_HEIGHT - 1 - y;
         for (unsigned int x = 0; x < BUFF_WIDTH / 2; x++)
-            shadow[y * BUFF_WIDTH + x] = buff[x * BUFF_WIDTH + src_col];
-        for (unsigned int x = BUFF_WIDTH / 2; x < BUFF_WIDTH; x++)
             shadow[y * BUFF_WIDTH + x] = buff[(BUFF_WIDTH - 1 - x) * BUFF_WIDTH + src_col];
+        for (unsigned int x = BUFF_WIDTH / 2; x < BUFF_WIDTH; x++)
+            shadow[y * BUFF_WIDTH + x] = buff[x * BUFF_WIDTH + src_col];
     }
     flip_screens();
 }
@@ -132,12 +135,12 @@ static void display_rot90_kaleidoscope(void)
     unsigned int mid_y = BUFF_HEIGHT / 2;
     for (unsigned int y = 0; y < mid_y; y++) {
         for (unsigned int x = 0; x < mid_x; x++) {
-            uint8_t pixel = buff[x * BUFF_WIDTH + y];
+            uint8_t pixel = buff[(BUFF_WIDTH - 1 - x) * BUFF_WIDTH + y];
             shadow[y * BUFF_WIDTH + x] = pixel;
             shadow[(BUFF_HEIGHT - 1 - y) * BUFF_WIDTH + x] = pixel;
         }
         for (unsigned int x = mid_x; x < BUFF_WIDTH; x++) {
-            uint8_t pixel = buff[(BUFF_WIDTH - 1 - x) * BUFF_WIDTH + y];
+            uint8_t pixel = buff[x * BUFF_WIDTH + y];
             shadow[y * BUFF_WIDTH + x] = pixel;
             shadow[(BUFF_HEIGHT - 1 - y) * BUFF_WIDTH + x] = pixel;
         }
