@@ -26,8 +26,8 @@ jobs:
         source export.sh
  
     - name: set target chip
-      run: idf.py set-target esp32p4
+      run: ~/idf.py set-target esp32p4
 
-      
+
  
         
