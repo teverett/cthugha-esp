@@ -194,23 +194,65 @@ block to fill the 720x720 display via the ST7703 MIPI-DSI panel driver.
 
 ## Effects
 
-**15 flame effects** — directional blur/scroll variations that create the
-trailing visual persistence (Up Slow, Up Subtle, Up Fast, Left/Right
-variants, Water, Skyline, Weird, Fade, Zzz)
+Total combinations: 15 × 24 × 8 × 5 × 8 = 115,200.
+Touch gestures cycle each axis independently (see Touch Controls above).
+The `BLANK` diagnostic log line reports the active combination when the
+screen goes dark for more than 2 seconds.
 
-**24 wave renderers** — different ways to map audio waveform data onto the
-buffer (dots, lines, spikes, Lissajous figures, lightning, fireflies,
-fractal walkers)
+### Flames (15) — index reported in BLANK log as `flame=N`
 
-**8 display modes** — buffer transformations applied before LCD output
-(upward, downward, horizontal split, kaleidoscope, 90-degree rotated
-mirrors)
+| # | Name | # | Name | # | Name |
+|---|------|---|------|---|------|
+| 0 | Slow Left | 5 | Up Fast | 10 | Water Subtle |
+| 1 | Left Subtle | 6 | Right Slow | 11 | Skyline |
+| 2 | Left Fast | 7 | Right Subtle | 12 | Weird |
+| 3 | Up Slow | 8 | Right Fast | 13 | Zzz |
+| 4 | Up Subtle | 9 | Water | 14 | Fade |
 
-**4 translation effects** — spatial remapping through precomputed lookup
-tables (swirl, tunnel, fisheye, ripple)
+### Waves (24) — index reported as `wave=N`
 
-**8 color palettes** — procedural gradients (Royal Purple, Fire, Ocean,
-Acid, Sunset, Ice, Rainbow, Hot Metal)
+| # | Name | # | Name | # | Name |
+|---|------|---|------|---|------|
+| 0 | Dot HS | 8 | Spike | 16 | Lightning 2 |
+| 1 | Dot HL | 9 | Walking | 17 | Dot VS |
+| 2 | Line VW | 10 | Falling | 18 | FireFlies |
+| 3 | Spike S | 11 | Lissa | 19 | Pete |
+| 4 | Spike L | 12 | Line VS | 20 | Pete 2 |
+| 5 | Line HS | 13 | Line VL | 21 | Zippy 1 |
+| 6 | Line HL | 14 | Line X | 22 | Zippy 2 |
+| 7 | Dot VL | 15 | Lightning 1 | 23 | Zaph Test |
+
+### Display Modes (8) — index reported as `disp=N`
+
+| # | Name | Notes |
+|---|------|-------|
+| 0 | Upwards | Pass-through (no transform) |
+| 1 | Downwards | Vertical flip |
+| 2 | Hor. Split Out | Top/bottom split outward |
+| 3 | Hor. Split In | Top/bottom split inward |
+| 4 | Kaleidoscope | 4-quadrant mirror |
+| 5 | 90° Rot. Mirror | Rotated + mirrored |
+| 6 | 90° Rot. Mirror 2 | Rotated + mirrored variant |
+| 7 | 90° Kaleidoscope | Rotated kaleidoscope |
+
+### Translations (5 states) — index reported as `trans=N`
+
+| # | Name |
+|---|------|
+| 0 | None |
+| 1 | Swirl |
+| 2 | Tunnel |
+| 3 | Fisheye |
+| 4 | Ripple |
+
+### Palettes (8) — index reported as `pal=N`
+
+| # | Name | # | Name |
+|---|------|---|------|
+| 0 | Royal Purple | 4 | Sunset |
+| 1 | Fire | 5 | Ice |
+| 2 | Ocean | 6 | Rainbow |
+| 3 | Acid | 7 | Hot Metal |
 
 ## Project Structure
 

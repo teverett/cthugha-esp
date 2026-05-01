@@ -183,6 +183,45 @@ static void render_task(void *arg)
         // Apply display effect (mirroring/rotation)
         display_effect();
 
+        // Blank screen detection — log the active effect combination after 60 consecutive
+        // frames where the max pixel index in buff is below the darkness threshold.
+        // Threshold of 10 catches buffers collapsed to zero/near-zero palette indices.
+        {
+            static const char *pal_names[] = {
+                "Royal Purple","Fire","Ocean","Acid","Sunset","Ice","Rainbow","Hot Metal"
+            };
+            static const char *trans_names[] = {
+                "None","Swirl","Tunnel","Fisheye","Ripple"
+            };
+            static int blank_frames = 0;
+            static bool was_blank = false;
+            uint8_t max_px = 0;
+            for (int i = 0; i < BUFF_SIZE && max_px < 10; i++)
+                if (buff[i] > max_px) max_px = buff[i];
+
+            if (max_px < 10) {
+                blank_frames++;
+                if (blank_frames == 60) {
+                    int tidx = ct_clamp(translate_idx, 0, 4);
+                    ESP_LOGW(TAG, "BLANK %d frames: flame=%d(%s) wave=%d(%s) "
+                             "disp=%d(%s) pal=%d(%s) trans=%d(%s)",
+                             blank_frames,
+                             curflame,      flamearray[curflame].name,
+                             usewave,       wavearray[usewave].name,
+                             curdisplay,    disparray[curdisplay].name,
+                             curpal,        curpal < 8 ? pal_names[curpal] : "?",
+                             translate_idx, trans_names[tidx]);
+                    was_blank = true;
+                }
+            } else {
+                if (was_blank) {
+                    ESP_LOGI(TAG, "BLANK resolved after %d frames", blank_frames);
+                    was_blank = false;
+                }
+                blank_frames = 0;
+            }
+        }
+
         // Scale and send to LCD
         display_render();
 
