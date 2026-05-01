@@ -272,11 +272,44 @@ cthugha_esp/
 │   ├── translate.c         # 4 spatial remap effects
 │   ├── display.c/h         # ST7703 MIPI-DSI driver, display modes, 3x scaling
 │   ├── audio_capture.c/h   # I2S MEMS microphone capture
+│   ├── boom_box.c/h         # Bouncing audio-reactive colored squares
 │   └── touch_input.c/h     # GT911 capacitive touch with gesture detection
 ```
 
-## Credits
+## Credits & Attributions
 
-Original Cthugha v5.3 by Zaph / Digital Aasvogel Group / Torps
-Productions, 1993-1995. Source released under a non-commercial open
-source license — see the original `CTHUGHA.H` header for terms.
+### Original Cthugha
+**Cthugha v5.3** by Zaph / Digital Aasvogel Group / Torps Productions, 1993–1995.
+The flame effects, wave renderers, palette system, and core audio-seeded
+framebuffer pipeline are ported from this source. Released under a
+non-commercial open source license — see the original `CTHUGHA.H` header
+for terms.
+
+### JavaScript Port
+**cthugha-js** by Delaney Parker —
+https://github.com/delaneyparker/cthugha-js
+
+A TypeScript/PIXI.js adaptation of Cthugha. The **Boom Boxes** feature
+(bouncing audio-reactive colored squares) is derived from this port and
+was not present in the original v5.3 DOS source.
+
+### ESP-IDF & Espressif Components
+**ESP-IDF** — https://github.com/espressif/esp-idf
+Framework, FreeRTOS integration, I2S, I2C, GPIO, and DMA drivers.
+
+**waveshare/esp_lcd_st7703** (via ESP Component Registry)
+MIPI-DSI panel driver for the ST7703 720×720 display used on the
+Waveshare ESP32-P4-WIFI6-Touch-LCD-4B board.
+
+**espressif/esp_lcd_touch_gt911** (via ESP Component Registry)
+Capacitive touch driver for the GT911 controller.
+
+**espressif/esp_codec_dev** — ES7210 ADC codec driver (mic input) and
+ES8311 DAC codec driver extracted from this component's device drivers.
+
+### Hardware
+**Waveshare ESP32-P4-WIFI6-Touch-LCD-4B** development board —
+https://www.waveshare.com
+
+ESP32-P4 dual-core RISC-V @ 360 MHz, 32 MB PSRAM, 32 MB flash,
+720×720 MIPI-DSI display, GT911 touch, ES7210 mic ADC, ES8311 DAC.
