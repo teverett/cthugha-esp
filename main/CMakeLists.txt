@@ -8,6 +8,7 @@ idf_component_register(
         "display.c"
         "audio_capture.c"
         "touch_input.c"
+        "boom_box.c"
     INCLUDE_DIRS "."
     REQUIRES
         driver

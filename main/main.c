@@ -19,6 +19,7 @@
 #include "display.h"
 #include "audio_capture.h"
 #include "touch_input.h"
+#include "boom_box.h"
 
 static const char *TAG = "cthugha";
 
@@ -76,6 +77,7 @@ static void randomize_all(void)
     curdisplay = change_display(esp_random() % numdisplays);
     if (nrtrans && !(esp_random() % 5))
         translate_idx = esp_random() % nrtrans;
+    boom_boxes_randomize();
 }
 
 // --- Touch gesture handling ---
@@ -180,6 +182,9 @@ static void render_task(void *arg)
             }
         }
 
+        // Boom boxes: paint bouncing colored squares into buff (audio-reactive size)
+        boom_boxes_update();
+
         // Apply display effect (mirroring/rotation)
         display_effect();
 
@@ -258,6 +263,7 @@ void app_main(void)
     init_sine();
     init_palettes();
     init_translate();
+    boom_boxes_init();
 
     // Set initial random modes
     curflame = change_flame(esp_random());
