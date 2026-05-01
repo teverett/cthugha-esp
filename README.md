@@ -194,7 +194,7 @@ block to fill the 720x720 display via the ST7703 MIPI-DSI panel driver.
 
 ## Effects
 
-Total combinations: 15 × 24 × 8 × 5 × 8 = 115,200.
+Total combinations: 15 × 24 × 8 × 5 × 8 = 115,200 (× 2 with Boom Boxes on/off).
 Touch gestures cycle each axis independently (see Touch Controls above).
 The `BLANK` diagnostic log line reports the active combination when the
 screen goes dark for more than 2 seconds.
@@ -253,6 +253,15 @@ screen goes dark for more than 2 seconds.
 | 1 | Fire | 5 | Ice |
 | 2 | Ocean | 6 | Rainbow |
 | 3 | Acid | 7 | Hot Metal |
+
+### Boom Boxes — randomly active, not a numbered axis
+
+Two colored squares (one per stereo mic channel) bounce around the
+framebuffer seeding pixels that the flame then propagates. Size is
+audio-reactive (1–6 px). Activated with ~40% probability each time
+effects are randomized; occasionally reset to a new random position and
+velocity. Inspired by [cthugha-js](https://github.com/delaneyparker/cthugha-js)
+— not present in the original v5.3 DOS source.
 
 ## Project Structure
 

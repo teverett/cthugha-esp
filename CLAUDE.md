@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESP32-P4 port of Cthugha v5.3, a real-time audio visualization program ("An Oscilloscope on Acid"). Originally a DOS program by Zaph / Digital Aasvogel Group / Torps Productions (1993-1995), ported to run on the **ESP32-P4-WIFI6-Touch-LCD-4B** (Waveshare) development board.
 
-The original DOS source lives at `../cthugha` for reference.
+The original DOS source (v5.3) lives at `../cthug53s` for reference.
 
 ## Target Board
 
@@ -48,11 +48,12 @@ First build downloads managed components automatically: `waveshare/esp_lcd_st770
 Internal framebuffer is 240×240 @ 8-bit indexed color (57,600 bytes), scaled 3× to 720×720 RGB565 for the LCD. Each frame in the render loop (`render_task` in main.c, pinned to core 0):
 
 1. **Flame** (flames.c) — scrolls/blurs the buffer via directional pixel averaging through `divsub[]` lookup table. 15 effects ported from original x86 inline assembly.
-2. **Audio** (audio_capture.c) — reads I2S MEMS microphone into `stereo[240][2]` as 0–255 normalized samples. Mono mic duplicated to both channels.
+2. **Audio** (audio_capture.c) — reads stereo I2S from ES7210 ADC codec into `stereo[240][2]` as 0–255 normalized samples. MAV-based AGC adjusts gain automatically to room level.
 3. **Wave** (waves.c) — maps audio data onto the buffer as visual patterns. 24 renderers ported from MODES.C and PETE.C.
-4. **Translation** (translate.c) — optional spatial remapping via precomputed uint16_t lookup tables. 4 procedural effects (swirl, tunnel, fisheye, ripple).
-5. **Display effect** (display.c) — buffer transforms before output (mirror, rotate, kaleidoscope). 8 modes from DISPLAY.C.
-6. **LCD output** (display.c `display_render()`) — palette lookup into `pal_lut[256]` (RGB565), 3× nearest-neighbor scaling, written directly into DPI panel framebuffer, then `draw_bitmap` to swap buffers on vsync.
+4. **Boom Boxes** (boom_box.c) — two colored squares bounce around the buffer seeding pixels that flame propagates. Audio-reactive size. Randomly activated by `randomize_all()`. Novel feature from the JS port; not in original v5.3.
+5. **Translation** (translate.c) — optional spatial remapping via precomputed uint16_t lookup tables. 4 procedural effects (swirl, tunnel, fisheye, ripple).
+6. **Display effect** (display.c) — buffer transforms before output (mirror, rotate, kaleidoscope). 8 modes from DISPLAY.C.
+7. **LCD output** (display.c `display_render()`) — palette lookup into `pal_lut[256]` (RGB565), 3× nearest-neighbor scaling, written directly into DPI panel framebuffer, then `draw_bitmap` to swap buffers on vsync.
 
 ### Display Driver (display.c)
 
@@ -70,7 +71,15 @@ The render loop writes directly into the back framebuffer, then calls `draw_bitm
 
 ### Audio Capture (audio_capture.c)
 
-I2S standard mode, mono, 16-bit, default 16 kHz sample rate. Uses `i2s_channel_init_std_mode()` (not the removed `_rx_mode` variant — that was dropped in ESP-IDF v5.5). MCLK multiply = 384×.
+The board has **two audio codec chips** sharing the same I2S bus:
+- **ES8311** (I2C addr 0x18) — DAC/speaker output only. Has no real ADC. Do not attempt to record from it; all reads return zeros.
+- **ES7210** (I2C addr 0x40, 7-bit) — 4-channel ADC/microphone codec. This is the mic source.
+
+Both are initialized via the **new I2C master API** (`driver/i2c_master.h`) and share the I2C bus already created by `touch_input_init()`. The bus handle is exposed via `touch_get_i2c_bus()`.
+
+I2S runs **full-duplex stereo**, 16-bit, 16 kHz. MCLK multiply = 384×. TX drives DOUT → ES8311 DAC (silence). RX reads DIN ← ES7210 SDOUT (MIC1=L, MIC2=R). Uses `i2s_channel_init_std_mode()` (the `_rx_mode` variant was removed in ESP-IDF v5.5).
+
+A **MAV-based AGC** (mean absolute value, not peak) tracks average signal energy with fast attack (α=0.3) and slow decay (α=0.002 ≈ 10s half-life), targeting output MAV ≈ 50 counts from the 0–255 midpoint.
 
 ### Touch Input (touch_input.c)
 
@@ -86,6 +95,8 @@ GT911 capacitive touch over I2C master bus. Gesture detection: tap, double-tap, 
 - `pal_lut[256]` — palette converted to RGB565 for LCD output
 - `sine_table[240]` — precomputed sine values for wave effects
 - `lcd_fb[2]` — DPI panel's own double-buffered 720×720 RGB565 framebuffers
+- `boom_boxes[2]` — bouncing colored square state (position, velocity, color, size per box)
+- `boom_boxes_active` — whether boom boxes are currently painting into buff this cycle
 
 ### Effect Selection
 
@@ -111,3 +122,8 @@ ESP32-P4 @ 360 MHz, SPIRAM @ 200 MHz, `IDF_EXPERIMENTAL_FEATURES` enabled (requi
 - **Backlight polarity**: LCD backlight is active LOW on this board (GPIO 26 = 0 to turn on).
 - **Kconfig vs hardcoded**: LCD resolution (720×720) and MIPI-DSI timing are hardcoded via ST7703 macros, not Kconfig — the panel driver handles all timing. Only GPIO pins and I2S sample rate are in Kconfig.
 - **sdkconfig v5.5.1 incompatibilities**: `SPIRAM_MODE_QUAD`, `SPIRAM_FETCH_INSTRUCTIONS`, `SPIRAM_RODATA` don't exist on this target/version. CPU max is 360 MHz (not 400).
+- **Two audio codecs, one I2S bus**: ES8311 (0x18) is DAC-only — reading from it yields all zeros. ES7210 (0x40) is the mic ADC. Both share GPIO 7/8 I2C bus with GT911 touch. Must use new I2C master API (`driver/i2c_master.h`) for both; the old `driver/i2c.h` API cannot share the same port.
+- **Touch init must precede audio init**: `audio_capture_init()` calls `touch_get_i2c_bus()` to attach ES7210 to the shared bus. If audio init runs before touch init, the bus handle is NULL and the ES7210 attach will abort.
+- **Translation effects are not ported from original**: The original Cthugha v5.3 loaded precomputed `.tab` binary files (320×200 pixel maps). We have no `.tab` files; the four effects (swirl, tunnel, fisheye, ripple) are procedurally generated from scratch for the 240×240 square buffer.
+- **Fisheye was barrel distortion**: The original `gen_fisheye` used `nr = r*r` which pulls all content toward the center (dark area) — a barrel distortion. Fixed to `nr = sqrtf(r)` which reads from outer/bottom areas where flame content lives.
+- **90° rotation effects read from wrong half of buffer**: The original port sampled `buff[x*W+y]` for x=0..W/2-1, covering only rows 0–119 (top half, where content is dark/old). Wave seeds rows 236–239 (bottom). Fixed to `buff[(W-1-x)*W+y]` so both halves read from rows 120–239, including the seeded area.
