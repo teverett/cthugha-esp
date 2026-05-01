@@ -30,10 +30,7 @@ static int16_t raw_samples[BUFF_WIDTH * 2];
 
 int stereo[BUFF_WIDTH][2];
 int minnoise = 2;
-// Software gain multiplier: 256 = map ±128 raw to full 0-255 range
-// Increase if waveforms are too small; decrease if they overdrive/clip
-// With raw values of ±70-90 (observed), 256 gives good room-noise reactivity
-int mic_amplify = 200;
+int mic_amplify = 200; // AGC-computed each frame; readable externally for diagnostics
 
 // --- ES7210 ADC codec via new I2C master API ---
 // AD1=AD0=0 → 7-bit address 0x40 (stored as 0x80 in 8-bit convention)
@@ -191,31 +188,43 @@ int audio_capture_read(void)
                                      BUFF_WIDTH * 2 * sizeof(int16_t),
                                      &bytes_read, pdMS_TO_TICKS(50));
 
-    static int dbg = 0;
-    if (++dbg >= 300) {
-        dbg = 0;
-        int n = (int)(bytes_read / sizeof(int16_t));
-        ESP_LOGI(TAG, "I2S L[0]=%d R[0]=%d L[60]=%d R[60]=%d L[120]=%d R[120]=%d (err=%d bytes=%d)",
-                 n > 0   ? raw_samples[0]   : -1,
-                 n > 1   ? raw_samples[1]   : -1,
-                 n > 120 ? raw_samples[120] : -1,
-                 n > 121 ? raw_samples[121] : -1,
-                 n > 240 ? raw_samples[240] : -1,
-                 n > 241 ? raw_samples[241] : -1,
-                 (int)err, (int)bytes_read);
-    }
-
     if (err != ESP_OK || bytes_read == 0)
         return 0;
 
     int pairs = (int)(bytes_read / (2 * sizeof(int16_t)));
+
+    // Peak envelope follower AGC
+    // Attack: instantaneous — envelope jumps to new peak immediately to prevent clipping
+    // Decay:  0.998 per frame ≈ 12s half-life at 30fps — rides room level slowly
+    // Floor:  100 raw counts — caps max gain so silence doesn't blow up
+    static float agc_peak = 500.0f;
+    int frame_peak = 0;
+    for (int i = 0; i < pairs; i++) {
+        int al = abs((int)raw_samples[i * 2]);
+        int ar = abs((int)raw_samples[i * 2 + 1]);
+        if (al > frame_peak) frame_peak = al;
+        if (ar > frame_peak) frame_peak = ar;
+    }
+    if ((float)frame_peak > agc_peak)
+        agc_peak = (float)frame_peak;  // fast attack
+    else
+        agc_peak *= 0.998f;            // slow decay
+    if (agc_peak < 100.0f) agc_peak = 100.0f;
+
+    // Scale so agc_peak raw → 80% of output half-range (102 counts from midpoint 128)
+    // 102 * 256 / agc_peak = 26112 / agc_peak
+    mic_amplify = ct_clamp((int)(26112.0f / agc_peak), 1, 512);
+
+    static int dbg = 0;
+    if (++dbg >= 300) {
+        dbg = 0;
+        ESP_LOGI(TAG, "AGC: peak=%.0f amplify=%d  L[0]=%d R[0]=%d",
+                 agc_peak, mic_amplify, raw_samples[0], raw_samples[1]);
+    }
+
     for (int i = 0; i < (int)BUFF_WIDTH; i++) {
         int16_t l = (i < pairs) ? raw_samples[i * 2]     : 0;
         int16_t r = (i < pairs) ? raw_samples[i * 2 + 1] : 0;
-        // 128 = silence midpoint; mic_amplify scales the deviation.
-        // mic_amplify=1   → ±32768 raw maps to 0-255  (very quiet mics)
-        // mic_amplify=256 → ±128 raw maps to 0-255    (strong signal)
-        // mic_amplify=512 → ±64 raw maps to 0-255     (will clip louder sounds)
         stereo[i][0] = ct_clamp(128 + (int)l * mic_amplify / 256, 0, 255);
         stereo[i][1] = ct_clamp(128 + (int)r * mic_amplify / 256, 0, 255);
     }
