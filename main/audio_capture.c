@@ -193,35 +193,35 @@ int audio_capture_read(void)
 
     int pairs = (int)(bytes_read / (2 * sizeof(int16_t)));
 
-    // Peak envelope follower AGC
-    // Attack: instantaneous — envelope jumps to new peak immediately to prevent clipping
-    // Decay:  0.998 per frame ≈ 12s half-life at 30fps — rides room level slowly
-    // Floor:  30 raw counts — caps max gain so silence doesn't produce runaway gain
-    // Initial: 50 (near floor) so gain starts high on boot rather than converging over minutes
-    static float agc_peak = 50.0f;
-    int frame_peak = 0;
+    // MAV-based AGC (Mean Absolute Value — tracks average energy, not peaks)
+    // Peak-following AGC suppresses gain after every transient; MAV rides the
+    // mean level so typical amplitude stays high even after a loud spike.
+    // Attack: fast (α=0.3) — gain drops quickly if average level rises
+    // Decay:  slow (α=0.002) — gain recovers over ~10s as room gets quieter
+    // Floor:  5 raw counts — prevents runaway gain in silence
+    static float agc_level = 30.0f;
+    long sum_abs = 0;
     for (int i = 0; i < pairs; i++) {
-        int al = abs((int)raw_samples[i * 2]);
-        int ar = abs((int)raw_samples[i * 2 + 1]);
-        if (al > frame_peak) frame_peak = al;
-        if (ar > frame_peak) frame_peak = ar;
+        sum_abs += abs((int)raw_samples[i * 2]) + abs((int)raw_samples[i * 2 + 1]);
     }
-    if ((float)frame_peak > agc_peak)
-        agc_peak = (float)frame_peak;  // fast attack
-    else
-        agc_peak *= 0.998f;            // slow decay
-    if (agc_peak < 30.0f) agc_peak = 30.0f;
+    float frame_mav = (float)sum_abs / (pairs * 2);
 
-    // Target: agc_peak maps to ~95% of output half-range (±122 counts from midpoint 128)
-    // leaving ~5 counts (~4%) headroom before hard clipping at 0/255.
-    // 122 * 256 = 31232
-    mic_amplify = ct_clamp((int)(31232.0f / agc_peak), 1, 512);
+    if (frame_mav > agc_level)
+        agc_level = agc_level * 0.7f + frame_mav * 0.3f;  // fast attack
+    else
+        agc_level = agc_level * 0.998f + frame_mav * 0.002f;  // slow decay
+    if (agc_level < 5.0f) agc_level = 5.0f;
+
+    // Target: output MAV ≈ 50 counts from midpoint 128 (~39% of half-range on average)
+    // Peaks ride 3-5× above MAV so will hit 150-250 — vivid with occasional clipping.
+    // 50 * 256 = 12800
+    mic_amplify = ct_clamp((int)(12800.0f / agc_level), 1, 512);
 
     static int dbg = 0;
     if (++dbg >= 300) {
         dbg = 0;
-        ESP_LOGI(TAG, "AGC: peak=%.0f amplify=%d  L[0]=%d R[0]=%d",
-                 agc_peak, mic_amplify, raw_samples[0], raw_samples[1]);
+        ESP_LOGI(TAG, "AGC: mav=%.1f amplify=%d  L[0]=%d R[0]=%d",
+                 agc_level, mic_amplify, raw_samples[0], raw_samples[1]);
     }
 
     for (int i = 0; i < (int)BUFF_WIDTH; i++) {
