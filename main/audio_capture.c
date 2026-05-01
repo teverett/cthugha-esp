@@ -196,8 +196,9 @@ int audio_capture_read(void)
     // Peak envelope follower AGC
     // Attack: instantaneous — envelope jumps to new peak immediately to prevent clipping
     // Decay:  0.998 per frame ≈ 12s half-life at 30fps — rides room level slowly
-    // Floor:  100 raw counts — caps max gain so silence doesn't blow up
-    static float agc_peak = 500.0f;
+    // Floor:  30 raw counts — caps max gain so silence doesn't produce runaway gain
+    // Initial: 50 (near floor) so gain starts high on boot rather than converging over minutes
+    static float agc_peak = 50.0f;
     int frame_peak = 0;
     for (int i = 0; i < pairs; i++) {
         int al = abs((int)raw_samples[i * 2]);
@@ -209,11 +210,12 @@ int audio_capture_read(void)
         agc_peak = (float)frame_peak;  // fast attack
     else
         agc_peak *= 0.998f;            // slow decay
-    if (agc_peak < 100.0f) agc_peak = 100.0f;
+    if (agc_peak < 30.0f) agc_peak = 30.0f;
 
-    // Scale so agc_peak raw → 80% of output half-range (102 counts from midpoint 128)
-    // 102 * 256 / agc_peak = 26112 / agc_peak
-    mic_amplify = ct_clamp((int)(26112.0f / agc_peak), 1, 512);
+    // Target: agc_peak maps to ~95% of output half-range (±122 counts from midpoint 128)
+    // leaving ~5 counts (~4%) headroom before hard clipping at 0/255.
+    // 122 * 256 = 31232
+    mic_amplify = ct_clamp((int)(31232.0f / agc_peak), 1, 512);
 
     static int dbg = 0;
     if (++dbg >= 300) {
