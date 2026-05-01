@@ -24,5 +24,10 @@ jobs:
         cd esp-idf  
         ./install.sh esp32p4
         source export.sh
-        
+ 
+    - name: set target chip
+      run: idf.py set-target esp32p4
+
+      
+ 
         
