@@ -1,4 +1,4 @@
-[![CI](https://github.com/cgyab/cthugha-esp/actions/workflows/main.yml/badge.svg)](https://github.com/cgyab/cthugha-esp/actions/workflows/main.yml)
+[![Build](https://github.com/cgyab/cthugha-esp/actions/workflows/build.yml/badge.svg)](https://github.com/cgyab/cthugha-esp/actions/workflows/build.yml)
 
 # Cthugha ESP32-P4
 
